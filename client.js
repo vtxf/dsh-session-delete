@@ -136,10 +136,10 @@ window.__ModuleLoader__.load({
 				while (f !== null && f !== undefined && guard++ < 40) {
 					var p = f.memoizedProps;
 					if (p !== null && p !== undefined && typeof p === "object") {
-						if (p.node !== null && p.node !== undefined && typeof p.node.id === "string" && typeof p.onArchive === "function") {
+						if (p.node !== null && p.node !== undefined && typeof p.node.id === "string" && typeof p.renderSlot === "function" && typeof p.onOpen === "function") {
 							return { kind: "session", id: p.node.id, title: String(p.node.title == null ? "" : p.node.title) };
 						}
-						if (p.group !== null && p.group !== undefined && typeof p.group.key === "string" && typeof p.onCreate === "function" && p.actions !== undefined && p.group.workspaceId !== undefined) {
+						if (p.group !== null && p.group !== undefined && typeof p.group.key === "string" && p.actions !== undefined && typeof p.group.workspaceId === "string") {
 							return { kind: "workspace", workspaceId: String(p.group.workspaceId), label: String(p.group.label == null ? "" : p.group.label) };
 						}
 					}
@@ -148,15 +148,28 @@ window.__ModuleLoader__.load({
 				return null;
 			}
 
-			function menuItemsIds(menuEl) {
+			/**
+			 * 判断一个 div[role="menu"] 属于哪种菜单。DSH 的 Menu 有两种用法：
+			 *   - 工作区行的菜单传 `items` 数组（当前是 rename / delete）；
+			 *   - 会话行的菜单不传 items，只传 `children`（侧栏把
+			 *     `sidebar.workspaces.session.menu.item` 这个 Slot 的贡献渲染进去），
+			 *     所以「没有 items」正是会话菜单的判据 —— 原实现只认 items，
+			 *     会话菜单因此永远识别不出来。
+			 */
+			function inspectMenu(menuEl) {
 				var f = fiberOf(menuEl);
 				var guard = 0;
 				while (f !== null && f !== undefined && guard++ < 30) {
 					var p = f.memoizedProps;
-					if (p !== null && p !== undefined && Array.isArray(p.items)) {
-						var ids = [];
-						for (var i = 0; i < p.items.length; i++) ids.push(p.items[i] === null || p.items[i] === undefined ? "" : String(p.items[i].id));
-						return ids;
+					if (p !== null && p !== undefined && typeof p === "object") {
+						if (Array.isArray(p.items)) {
+							var ids = [];
+							for (var i = 0; i < p.items.length; i++) ids.push(p.items[i] === null || p.items[i] === undefined ? "" : String(p.items[i].id));
+							return { hasItems: true, ids: ids };
+						}
+						if (typeof p.onClose === "function" && p.anchor !== undefined && p.anchor !== null && p.children !== undefined && p.children !== null) {
+							return { hasItems: false, ids: [] };
+						}
 					}
 					f = f.return;
 				}
@@ -186,9 +199,24 @@ window.__ModuleLoader__.load({
 				} catch (e) {}
 			}
 
+			// 菜单项的公共容器是 div.itemWrap（primitives 的 MenuItemButton 根元素）。
+			// 不能用 viewport.children：会话菜单的项由 slot 渲染，整组会被一层容器 div 包住，
+			// 克隆那个容器会把「重命名/分叉/归档」整组复制一遍。
+			function itemWraps(viewport) {
+				var btns = viewport.querySelectorAll('button[role="menuitem"]');
+				var out = [];
+				for (var i = 0; i < btns.length; i++) {
+					var w = btns[i].parentElement;
+					if (w !== null && w.tagName === "DIV" && out.indexOf(w) === -1) out.push(w);
+				}
+				return out;
+			}
+
 			function addItem(viewport, template, dangerTemplate, label, iconD, danger, handler) {
 				var wrap = template.cloneNode(true);
 				wrap.removeAttribute("id");
+				var stray = wrap.querySelector('div[role="separator"]');
+				if (stray !== null && stray.parentNode !== null) stray.parentNode.removeChild(stray);
 				var btn = wrap.querySelector("button");
 				if (btn === null) return;
 				if (danger && dangerTemplate !== null && dangerTemplate !== undefined) {
@@ -221,21 +249,16 @@ window.__ModuleLoader__.load({
 
 			function tryInject(menuEl) {
 				if (menuEl.getAttribute("data-sesdel") !== null) return;
-				var ids = menuItemsIds(menuEl);
-				if (ids === null) return;
-				var isSession = ids.indexOf("archive") !== -1 && ids.indexOf("fork") !== -1;
-				var isWorkspace = ids.indexOf("delete") !== -1 && ids.indexOf("archive") === -1 && ids.indexOf("fork") === -1;
-				if (!isSession && !isWorkspace) return;
-				var row = pendingRow !== null && Date.now() - pendingRow.ts < 2000 ? pendingRow : null;
+				var info = inspectMenu(menuEl);
+				if (info === null) return;
+				var row = pendingRow !== null && pendingRow !== undefined && Date.now() - pendingRow.ts < 2500 ? pendingRow : null;
 				if (row === null) return;
-				if (isSession && row.kind !== "session") return;
-				if (isWorkspace && row.kind !== "workspace") return;
+				var isSession = row.kind === "session" && info.hasItems === false;
+				var isWorkspace = row.kind === "workspace" && info.hasItems === true && info.ids.indexOf("rename") !== -1 && info.ids.indexOf("delete") !== -1;
+				if (!isSession && !isWorkspace) return;
 				var viewport = menuEl.querySelector('div[role="presentation"]');
 				if (viewport === null) return;
-				var wraps = [];
-				for (var i = 0; i < viewport.children.length; i++) {
-					if (viewport.children[i].tagName === "DIV") wraps.push(viewport.children[i]);
-				}
+				var wraps = itemWraps(viewport);
 				if (wraps.length === 0) return;
 				menuEl.setAttribute("data-sesdel", "1");
 				var dangerTemplate = isWorkspace ? wraps[wraps.length - 1] : null;
